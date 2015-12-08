@@ -14,7 +14,7 @@
  *   decryption(..):
  *     -> Iterates DES blocks for decryption.
  * Major variables:
- *   long long int *keys:
+ *   long long unsigned *keys:
  *     -> 64-bit initial key.
  *        Only 56 bits of the key are used.
  *        Every 8th bit is a parity bit for odd-parity.
@@ -35,7 +35,8 @@
 #include <string.h>
 
 // #define PARITY_CHECK
-#define DEBUG
+//#define DEBUG
+#define RESULT
 
 // Tables for IP, FP, E , PC1, PC2, S
 static int table_IP[64] = {
@@ -151,10 +152,58 @@ static int table_P[32] = {
     14, 30,  4, 19,  1,  9, 15, 23
 };
 
-void DES(int index, long long int *MD, long long int *keys);
-unsigned int F(unsigned int c, long long int key);
-int encryption(char *in, char *out, char *key);
-int decryption(char *in, char *out, char *key);
+// Bitwise functions
+void getKeyPart(long long unsigned *key_part, char *key);
+void getIP(long long unsigned *out, long long unsigned in);
+void getFP(long long unsigned *out, long long unsigned in);
+
+// Major functions
+void DES(int index, long long unsigned *MD, long long unsigned *keys);
+unsigned int F(unsigned int c, long long unsigned key);
+int encryption(char *in, char *out, char *key, int input_len);
+int decryption(char *in, char *out, char *key, int input_len);
+
+/*********************
+ * BITWISE FUNCTIONS *
+ *********************/
+
+inline void getKeyPart(long long unsigned *key_part, char *key) {
+    int i;
+#ifdef PARITY_CHECK
+    for(i = 0; i < 8; i++) {
+        int parity = 0;
+        for(int j = 0; j < 8; j++) {
+            parity ^= ( ( 0x1 << j ) & key[i] ) >> j;
+        }
+        if(parity == 0) {
+            return -1;
+        }
+    }
+#endif
+    *key_part = 0;
+    for(i = 0; i < 8; i++) {
+        *key_part ^= key[i] & 0xff;
+        if(i != 7) *key_part <<= 8;
+    }
+}
+
+inline void getIP(long long unsigned *out, long long unsigned in) {
+    *out = 0;
+    for(int i = 0; i < 64; i++) {
+        *out += ( ( ( 0x1ull << table_IP[i] ) & in ) >> table_IP[i] ) << i;
+    }
+}
+
+inline void getFP(long long unsigned *out, long long unsigned in) {
+    *out = 0;
+    for(int i = 0; i < 64; i++) {
+        *out += ( ( ( 0x1ull << table_FP[i] ) & in ) >> table_FP[i] ) << i;
+    }
+}
+
+/*********************
+ *  MAJOR FUNCTIONS  *
+ *********************/
 
 /*
  * Single DES block
@@ -163,7 +212,7 @@ int decryption(char *in, char *out, char *key);
  * @param keys 56-bit round keys (input & output reference)
  * @return 64-bit data
  */
-void DES(int index, long long int *MD, long long int *keys) {
+void DES(int index, long long unsigned *MD, long long unsigned *keys) {
     // L, R, fout: 32-bit
     unsigned int L, R, fout;
     int i;
@@ -171,19 +220,20 @@ void DES(int index, long long int *MD, long long int *keys) {
     // (1/3) Get L (=63..32 bits of *MD) and R (=31..0 bits of *MD)
     L = (*MD >> 32) & 0xffffffff;
     R = *MD & 0xffffffff;
-
 #ifdef DEBUG
-    printf("L = %X\n", L);
-    printf("R = %X\n", R);
+    printf("%d\tbefore %llX %llX\n", index, ((*MD >> 32) & 0x00000000ffffffff), (*MD & 0x00000000ffffffff));
 #endif
 
     // (2/3) Calculate f function for R block
     fout = F(R, *keys);
 
     // (3/3) Prepare for the next ronud
-    *MD = R;
+    *MD = R & 0xffffffff;
     *MD <<= 32;
-    *MD ^= (L ^ fout);
+    *MD ^= (L ^ fout) & 0xffffffff;
+#ifdef DEBUG
+    printf("%d\tbefore %llX %llX\n", index, ((*MD >> 32) & 0x00000000ffffffff), (*MD & 0x00000000ffffffff));
+#endif
 }
 
 /*
@@ -192,7 +242,7 @@ void DES(int index, long long int *MD, long long int *keys) {
  * @param key 56-bit roundkey
  * @return 32-bit processed block
  */
-unsigned int F(unsigned int c, long long int key) {
+unsigned int F(unsigned int c, long long unsigned key) {
     // expanded: 48-bit
     // subkey: 48-bit
     // sout: 32-bit
@@ -206,14 +256,14 @@ unsigned int F(unsigned int c, long long int key) {
     // (1/5) Expand c to 48-bit following table_E (i = bit index)
     expanded = 0;
     for(i = 0; i < 48; i++) {
-        expanded ^= ( ( 0x1 << table_E[i] ) & c) >> table_E[i];
+        expanded ^= ( ( 0x1ull << table_E[i] ) & c) >> table_E[i];
         if(i != 47) expanded <<= 1;
     }
 
     // (2/5) Convert the round key into subkey using PC2 (i = bit index)
     subkey = 0;
     for(i = 0; i < 48; i++) {
-        subkey ^= ( ( 0x1 << table_PC2[i] ) & key) >> table_PC2[i];
+        subkey ^= ( ( 0x1ull << table_PC2[i] ) & key) >> table_PC2[i];
         if(i != 47) subkey <<= 1;
     }
 
@@ -230,71 +280,56 @@ unsigned int F(unsigned int c, long long int key) {
     // (5/5) 32-bit permutation (i = bit index)
     rtn = 0;
     for(i = 0; i < 32; i++) {
-        rtn ^= ( ( 0x1 << table_P[i] ) & sout) >> table_P[i];
+        rtn ^= ( ( 0x1ull << table_P[i] ) & sout) >> table_P[i];
         if(i != 31) rtn <<= 1;
     }
     return rtn;
 }
 
 /*
- * @param key 8-byte array
+ * encrypt in -> out
+ * @param in Input plain text
+ * @param out Output cipher text
+ * @param key Keyphrase
+ * @param input_len Length of in
  */
-int encryption(char *in, char *out, char *key) {
+int encryption(char *in, char *out, char *key, int input_len) {
     // 64-bit or 56-bit part of in, out, and key for external iteration
-    long long int in_part, out_part, key_part;
+    long long unsigned in_part, out_part, key_part;
     // Data and round key for DES. *** these are referenced threw DES
-    long long int MD, keys;
+    long long unsigned MD, keys;
     // rotation_overflow: 56-bit
-    long long int rotation_overflow;
+    long long unsigned rotation_overflow;
     // temp: for swap
-    long long int temp;
+    long long unsigned temp;
     // For cutting input char array
-    int len, count;
+    int count;
     // For calculation inside iteration
     int round;
     // General purpose index
     int i;
 
     // (1/9) Generate 56-bit key_part (after parity check)
-#ifdef PARITY_CHECK
-    for(i = 0; i < 8; i++) {
-        int parity = 0;
-        for(int j = 0; j < 8; j++) {
-            parity ^= ( ( 0x1 << j ) & key[i] ) >> j;
-        }
-        if(parity == 0) {
-            return -1;
-        }
-    }
-#endif
-    key_part = 0;
-    for(i = 0; i < 8; i++) {
-        for(int j = 0; j < 7; j++) {
-            key_part ^= (key[i] >> j) & 0x1;
-            if(j != 6) key_part <<= 1;
-        }
-    }
+    getKeyPart(&key_part, key);
 
-    len = strlen(in);
-    for(int count = 0; count < len; count += 8) {
+    for(int count = 0; count < input_len; count += 8) {
         // (2/9) Cut input (input can be always devided with 64-bit, for convenience)
         in_part = 0;
         for(i = 0; i < 8; i++) {
             in_part ^= in[count + i] & 0xff;
             if(i != 7) in_part <<= 8;
         }
+#ifdef DEBUG
+        printf("%d\tloaded %8llX %8llX\n", round, ((in_part >> 32) & 0x00000000ffffffff), (in_part & 0x00000000ffffffff));
+#endif
 
         // (3/9) MD = Data after initial permutation (IP)
-        MD = 0;
-        for(i = 0; i < 64; i++) {
-            MD ^= ( ( 0x1 << table_IP[i] ) & in_part ) >> table_IP[i];
-            if(i != 63) MD <<= 1;
-        }
+        getIP(&MD, in_part);
 
         // (4/9) keys = First round key
         keys = 0x0;
         for(i = 0; i < 56; i++) {
-            keys ^= ( ( 0x1 << table_PC1[i]) & key_part) >> table_PC1[i];
+            keys ^= ( ( 0x1ull << table_PC1[i]) & key_part) >> table_PC1[i];
             if(i != 55) keys <<= 1;
         }
 
@@ -312,23 +347,31 @@ int encryption(char *in, char *out, char *key) {
                 keys ^= (rotation_overflow >> 27);
                 keys &= 0x00ffffffffffffff; // trim
             }
+#ifdef DEBUG
+        printf("%d\tbefore %8llX %8llX\n", round, ((MD >> 32) & 0x00000000ffffffff), (MD & 0x00000000ffffffff));
+        //printf("%d\t w/key %8llX %8llX\n", round, ((keys >> 32) & 0x00000000ffffffff), (keys & 0x00000000ffffffff));
+#endif
 
             // (6/9) Run DES block
             DES(round, &MD, &keys);
         }
 
         // (7/9) Swap LR
-        temp = MD & 0xffffffff;
+        temp = (MD & 0x00000000ffffffff) << 32;
         MD >>= 32;
-        MD &= 0xffffffff;
-        MD = MD ^ (temp << 32);
+        MD &= 0x00000000ffffffff;
+        MD = MD ^ temp;
+
+#ifdef DEBUG
+        printf("%d\t LRfin %8llX %8llX\n", round, ((MD >> 32) & 0x00000000ffffffff), (MD & 0x00000000ffffffff));
+#endif
 
         // (8/9) Final permutation (FP)
-        out_part = 0;
-        for(i = 0; i < 64; i++) {
-            out_part ^= ( ( 0x1 << table_FP[i] ) & MD ) >> table_FP[i];
-            if(i != 63) out_part <<= 1;
-        }
+        getFP(&out_part, MD);
+
+#ifdef DEBUG
+        printf("%d\t final %8llX %8llX\n", round, ((out_part >> 32) & 0x00000000ffffffff), (out_part & 0x00000000ffffffff));
+#endif
 
         // (9/9) Write to output array
         for(i = 0; i < 8; i++) {
@@ -337,84 +380,65 @@ int encryption(char *in, char *out, char *key) {
         }
     }
 
-#ifdef DEBUG
-    printf("<DEBUG> out first segment: ");
-    for(int d = 0; d < 8; d++) {
-        printf("%X", out[d] & 0xff);
-    }
-    printf("\n");
-#endif
     return 0;
 }
 
-int decryption(char *in, char *out, char *key) {
-#ifdef DEBUG
-    printf("<DEBUG> in first segment: ");
-    for(int d = 0; d < 8; d++) {
-        printf("%X", in[d] & 0xff);
-    }
-    printf("\n");
-#endif
+/*
+ * Decrypt in -> out
+ * @param in Input cipher text
+ * @param out Output plain text
+ * @param key Keyphrase
+ * @param input_len Length of in
+ */
+int decryption(char *in, char *out, char *key, int input_len) {
     // 64-bit or 56-bit part of in, out, and key for external iteration
-    long long int in_part, out_part, key_part;
+    long long unsigned in_part, out_part, key_part;
     // Data and round key for DES. *** these are referenced threw DES
-    long long int MD, keys;
+    long long unsigned MD, keys;
     // rotation_overflow: 56-bit, for (/)
-    long long int rotation_overflow;
+    long long unsigned rotation_overflow;
     // temp: for swap
-    long long int temp;
+    long long unsigned temp;
     // For cutting input char array
-    int len, count;
+    int count;
     // For calculation inside iteration
     int round;
     // General purpose index
     int i;
 
     // (1/9) Generate 56-bit key_part (after parity check)
-#ifdef PARITY_CHECK
-    for(i = 0; i < 8; i++) {
-        int parity = 0;
-        for(int j = 0; j < 8; j++) {
-            parity ^= ( ( 0x1 << j ) & key[i] ) >> j;
-        }
-        if(parity == 0) {
-            return -1;
-        }
-    }
-#endif
-    key_part = 0;
-    for(i = 0; i < 8; i++) {
-        for(int j = 0; j < 7; j++) {
-            key_part ^= (key[i] >> j) & 0x1;
-            if(j != 6) key_part <<= 1;
-        }
-    }
+    getKeyPart(&key_part, key);
 
-    len = strlen(in);
-    for(int count = 0; count < len; count += 8) {
+    for(int count = 0; count < input_len; count += 8) {
         // (2/9) Cut input (input can be always devided with 64-bit, for convenience)
         in_part = 0;
-        for(i = 0; i < 8; i++) {
+        for(i = 7; i >= 0; i--) {
             in_part ^= in[count + i] & 0xff;
-            if(i != 7) in_part <<= 8;
+            if(i != 0) in_part <<= 8;
         }
+#ifdef DEBUG
+        printf("%d\tloaded %8llX %8llX\n", round, ((in_part >> 32) & 0x00000000ffffffff), (in_part & 0x00000000ffffffff));
+#endif
 
         // (3/9) MD = Data after initial permutation (IP)
-        MD = 0;
-        for(i = 0; i < 64; i++) {
-            MD ^= ( ( 0x1 << table_IP[i] ) & in_part ) >> table_IP[i];
-            if(i != 63) MD <<= 1;
-        }
+        getIP(&MD, in_part);
 
         // (4/9) keys = Last round key (Symmetry)
         keys = 0x0;
         for(i = 0; i < 56; i++) {
-            keys ^= ( ( 0x1 << table_PC1[i]) & key_part) >> table_PC1[i];
+            keys ^= ( ( 0x1ull << table_PC1[i]) & key_part) >> table_PC1[i];
             if(i != 55) keys <<= 1;
         }
 
         for(round = 0; round < 16; round++) {
-            // (5/9) Rotate round key 1 or 2 times to RIGHT (i-th bit to (i+1)-th bit, ...)
+#ifdef DEBUG
+        printf("%d\tbefore %8llX %8llX\n", round, ((MD >> 32) & 0x00000000ffffffff), (MD & 0x00000000ffffffff));
+        //printf("%d\t w/key %8llX %8llX\n", round, ((keys >> 32) & 0x00000000ffffffff), (keys & 0x00000000ffffffff));
+#endif
+            // (5/9) Run DES block
+            DES(16-round, &MD, &keys);
+
+            // (6/9) Rotate round key 1 or 2 times to RIGHT (i-th bit to (i+1)-th bit, ...)
             rotation_overflow = keys & 0x0000000010000001; // 0th, 28th bit kept(0-based counting)
             keys >>= 1;
             keys &= ~(0x0080000008000000);
@@ -427,68 +451,65 @@ int decryption(char *in, char *out, char *key) {
                 keys ^= (rotation_overflow << 27);
                 keys &= 0x00ffffffffffffff; // trim
             }
-            // (6/9) Run DES block
-            DES(round, &MD, &keys);
         }
 
         // (7/9) Swap LR
-        temp = MD & 0xffffffff;
+        temp = (MD & 0x00000000ffffffff) << 32;
         MD >>= 32;
-        MD &= 0xffffffff;
-        MD = MD ^ (temp << 32);
-
-        // (8/9) Final permutation (FP)
-        out_part = 0;
-        for(i = 0; i < 64; i++) {
-            out_part ^= ( ( 0x1 << table_FP[i] ) & MD ) >> table_FP[i];
-            if(i != 63) out_part <<= 1;
-        }
-
-        // (9/9) Write to output array
-        for(i = 0; i < 8; i++) {
-            out[count + i] = out_part & 0x00ff;
-            if(i != 7) out_part >>= 8;
-        }
-    }
+        MD &= 0x00000000ffffffff;
+        MD = MD ^ temp;
 
 #ifdef DEBUG
-    printf("<DEBUG> out first segment: ");
-    for(int d = 0; d < 8; d++) {
-        printf("%X", out[d] & 0xff);
-    }
-    printf("\n");
+        printf("%d\t LRfin %8llX %8llX\n", round, ((MD >> 32) & 0x00000000ffffffff), (MD & 0x00000000ffffffff));
 #endif
+
+        // (8/9) Final permutation (FP)
+        getFP(&out_part, MD);
+
+#ifdef DEBUG
+        printf("%d\t final %8llX %8llX\n", round, ((out_part >> 32) & 0x00000000ffffffff), (out_part & 0x00000000ffffffff));
+        getIP(&MD, out_part);
+        printf("%d\t  re   %8llX %8llX\n", round, ((MD >> 32) & 0x00000000ffffffff), (MD & 0x00000000ffffffff));
+        getFP(&out_part, MD);
+        printf("%d\t  rere %8llX %8llX\n", round, ((out_part >> 32) & 0x00000000ffffffff), (out_part & 0x00000000ffffffff));
+#endif
+
+        // (9/9) Write to output array
+        for(i = 7; i >= 0; i--) {
+            out[count + i] = out_part & 0x00ff;
+            if(i != 0) out_part >>= 8;
+        }
+    }
+
     return 0;
 }
 
 int main(int argc, char** argv) {
-    char filename[128] = "test.dat"; // For test only
-
     FILE *fi;
-    FILE *fo;
-    long iSize, residue;
+    long iSize, residue; // for 64-bit divisable lenght of iBuffer/oBuffer
     char *iBuffer;
     char *oBuffer; // output of encryption
     char *dBuffer; // output of decryption
 
+    /*** HOW TO USE ***/
     if(argc < 2) {
         printf("des_c <input_file_path> <keyphrase>\n");
     }
 
-    //fi = fopen(filename, "rb");
+    // Open test file
     fi = fopen(argv[1], "rb");
-    if(!fi) { perror("test.dat"); exit(1); }
+    if(!fi) { perror("opening file"); exit(1); }
 
     fseek(fi, 0L, SEEK_END);
     iSize = ftell(fi);
     rewind(fi);
 
-    // Make it to can be devided with 64-bit for convenience
-    // 7 ==> to count in EOF
+    // Make it to can be devided with 64-bit for convenience (7 ==> to count in EOF)
     if(iSize % 8 != 7) {
         residue = (8 - (iSize % 8));
     }
 
+    // Buffer allocations
     iBuffer = calloc(1, iSize+residue+1);
     oBuffer = calloc(1, iSize+residue+1);
     dBuffer = calloc(1, iSize+residue+1);
@@ -520,25 +541,19 @@ int main(int argc, char** argv) {
 #endif
     }
 
+#ifdef RESULT
+    printf("<RESULT> iBuffer str: %s\n", iBuffer);
+#endif
 #ifdef DEBUG
-    printf("<DEBUG> iBuffer: %s\n", iBuffer);
-    iBuffer[0] = 0x01;
-    iBuffer[1] = 0x23;
-    iBuffer[2] = 0x45;
-    iBuffer[3] = 0x67;
-    iBuffer[4] = 0x89;
-    iBuffer[5] = 0xab;
-    iBuffer[6] = 0xcd;
-    iBuffer[7] = 0xef;
-    for(int d = 0; d < 8; d++) {
-        printf("%X", iBuffer[d] & 0xff);
+    printf("<DEBUG> iBuffer hex: ");
+    for(int d = 0; d < iSize+residue+1; d++) {
+        printf("%X ", iBuffer[d] & 0xff);
     }
     printf("\n");
-    printf("<DEBUG> iBuffer: %s\n", oBuffer);
 #endif
 
     // TEST ENCRYPTION
-    encryption(iBuffer, oBuffer, key);
+    encryption(iBuffer, oBuffer, key, iSize+residue+1);
 
 #ifdef DEBUG
     printf("<DEBUG> oBuffer: ");
@@ -550,10 +565,10 @@ int main(int argc, char** argv) {
 #endif
 
     // TEST ENCRYPTION
-    decryption(oBuffer, dBuffer, key);
+    decryption(oBuffer, dBuffer, key, iSize+residue+1);
 
-#ifdef DEBUG
-    printf("<DEBUG> dBuffer: %s\n", dBuffer);
+#ifdef RESULT
+    printf("<RESULT> dBuffer str: %s\n", dBuffer);
 #endif
 
     fclose(fi);

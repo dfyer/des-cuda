@@ -29,16 +29,16 @@ int main() {
     }
     printf("out:  %s\n", out);
     temp = 0;
-    for(i = 0; i < 8; i++) {
+    for(i = 7; i >= 0; i--) {
         printf("out%d: %X\n", i, out[i]);
         temp ^= out[i] & 0xff;
-        if(i < 7) temp <<= 8;
+        if(i != 0) temp <<= 8;
         printf("temp:%llX\n", temp);
     }
-    for(i = 0; i < 8; i++) {
+    for(i = 7; i >= 0; i--) {
         printf("temp:%llX\n", temp);
         in[i] = temp & 0xff;
-        if(i < 7) temp >>= 8;
+        if(i != 0 ) temp >>= 8;
         printf("in%d:  %X\n", i, in[i]);
     }
     printf("in:   %s\n", in);
