@@ -37,6 +37,7 @@
 // #define PARITY_CHECK
 //#define DEBUG
 #define RESULT
+#define NUM_PARALLEL 4
 
 // Tables for IP, FP, E , PC1, PC2, S
 static int table_IP[64] = {
@@ -297,9 +298,9 @@ unsigned int F(unsigned int c, long long unsigned key) {
  */
 int encryption(char *in, char *out, char *key, int input_len) {
     // 64-bit or 56-bit part of in, out, and key for external iteration
-    long long unsigned in_part, out_part, key_part;
+    long long unsigned in_part[NUM_PARALLEL], out_part[NUM_PARALLEL], key_part;
     // Data and round key for DES. *** these are referenced threw DES
-    long long unsigned MD, first_key;
+    long long unsigned MD[NUM_PARALLEL], first_key;
     long long unsigned keys[16];
     // rotation_overflow: 56-bit
     long long unsigned rotation_overflow;
@@ -310,24 +311,28 @@ int encryption(char *in, char *out, char *key, int input_len) {
     // For calculation inside iteration
     int round;
     // General purpose index
-    int i;
+    int i, j;
 
     // (1/9) Generate 56-bit key_part (after parity check)
     getKeyPart(&key_part, key);
 
-    for(count = 0; count < input_len; count += 8) {
+    for(count = 0; count < input_len; count += 8 * NUM_PARALLEL) {
         // (2/9) Cut input (input can be always devided with 64-bit, for convenience)
-        in_part = 0;
-        for(i = 0; i < 8; i++) {
-            in_part ^= in[count + i] & 0xff;
-            if(i != 7) in_part <<= 8;
+        for(i = 0; i < NUM_PARALLEL; i++) {
+            in_part[i] = 0;
+            for(j = 0; j < 8; j++) {
+                in_part[i] ^= in[count + (8 * i) + j] & 0xff;
+                if(j != 7) in_part[i] <<= 8;
+            }
         }
 #ifdef DEBUG
         printf("%d\tloaded %8llX %8llX\n", round, ((in_part >> 32) & 0x00000000ffffffff), (in_part & 0x00000000ffffffff));
 #endif
 
         // (3/9) MD = Data after initial permutation (IP)
-        getIP(&MD, in_part);
+        for(i = 0; i < NUM_PARALLEL; i++) {
+            getIP(&(MD[i]), in_part[i]);
+        }
 
         // (4/9) Get first_key
         first_key = 0x0;
@@ -355,35 +360,43 @@ int encryption(char *in, char *out, char *key, int input_len) {
         }
 
         // (6/9) Run DES block
-        for(round = 0; round < 16; round++) {
+        for(i = 0; i < NUM_PARALLEL; i++) {
+            for(round = 0; round < 16; round++) {
 #ifdef DEBUG
-        printf("%d\tbefore %8llX %8llX\n", round, ((MD >> 32) & 0x00000000ffffffff), (MD & 0x00000000ffffffff));
-        //printf("%d\t w/key %8llX %8llX\n", round, ((keys >> 32) & 0x00000000ffffffff), (keys & 0x00000000ffffffff));
+            printf("%d\tbefore %8llX %8llX\n", round, ((MD >> 32) & 0x00000000ffffffff), (MD & 0x00000000ffffffff));
+            //printf("%d\t w/key %8llX %8llX\n", round, ((keys >> 32) & 0x00000000ffffffff), (keys & 0x00000000ffffffff));
 #endif
-            DES(round, &MD, keys);
+                DES(round, &(MD[i]), keys);
+            }
         }
 
         // (7/9) Swap LR
-        temp = (MD & 0x00000000ffffffff) << 32;
-        MD >>= 32;
-        MD &= 0x00000000ffffffff;
-        MD = MD ^ temp;
+        for(i = 0; i < NUM_PARALLEL; i++) {
+            temp = (MD[i] & 0x00000000ffffffff) << 32;
+            MD[i] >>= 32;
+            MD[i] &= 0x00000000ffffffff;
+            MD[i] = MD[i] ^ temp;
+        }
 
 #ifdef DEBUG
         printf("%d\t LRfin %8llX %8llX\n", round, ((MD >> 32) & 0x00000000ffffffff), (MD & 0x00000000ffffffff));
 #endif
 
         // (8/9) Final permutation (FP)
-        getFP(&out_part, MD);
+        for(i = 0; i < NUM_PARALLEL; i++) {
+            getFP(&(out_part[i]), MD[i]);
+        }
 
 #ifdef DEBUG
         printf("%d\t final %8llX %8llX\n", round, ((out_part >> 32) & 0x00000000ffffffff), (out_part & 0x00000000ffffffff));
 #endif
 
         // (9/9) Write to output array
-        for(i = 0; i < 8; i++) {
-            out[count + i] = out_part & 0x00ff;
-            if(i != 7) out_part >>= 8;
+        for(i = 0; i < NUM_PARALLEL; i++) {
+            for(j = 0; j < 8; j++) {
+                out[count + (8 * i) + j] = out_part[i] & 0x00ff;
+                if(j != 7) out_part[i] >>= 8;
+            }
         }
     }
 
@@ -399,9 +412,9 @@ int encryption(char *in, char *out, char *key, int input_len) {
  */
 int decryption(char *in, char *out, char *key, int input_len) {
     // 64-bit or 56-bit part of in, out, and key for external iteration
-    long long unsigned in_part, out_part, key_part;
+    long long unsigned in_part[NUM_PARALLEL], out_part[NUM_PARALLEL], key_part;
     // Data and round key for DES. *** these are referenced threw DES
-    long long unsigned MD, first_key;
+    long long unsigned MD[NUM_PARALLEL], first_key;
     long long unsigned keys[16];
     // rotation_overflow: 56-bit, for (/)
     long long unsigned rotation_overflow;
@@ -412,24 +425,28 @@ int decryption(char *in, char *out, char *key, int input_len) {
     // For calculation inside iteration
     int round;
     // General purpose index
-    int i;
+    int i, j;
 
     // (1/9) Generate 56-bit key_part (after parity check)
     getKeyPart(&key_part, key);
 
-    for(count = 0; count < input_len; count += 8) {
+    for(count = 0; count < input_len; count += 8 * NUM_PARALLEL) {
         // (2/9) Cut input (input can be always devided with 64-bit, for convenience)
-        in_part = 0;
-        for(i = 7; i >= 0; i--) {
-            in_part ^= in[count + i] & 0xff;
-            if(i != 0) in_part <<= 8;
+        for(i = 0; i < NUM_PARALLEL; i++) {
+            in_part[i] = 0;
+            for(j = 7; j >= 0; j--) {
+                in_part[i] ^= in[count + (8 * i) + j] & 0xff;
+                if(j != 0) in_part[i] <<= 8;
+            }
         }
 #ifdef DEBUG
         printf("%d\tloaded %8llX %8llX\n", round, ((in_part >> 32) & 0x00000000ffffffff), (in_part & 0x00000000ffffffff));
 #endif
 
         // (3/9) MD = Data after initial permutation (IP)
-        getIP(&MD, in_part);
+        for(i = 0; i < NUM_PARALLEL; i++) {
+            getIP(&(MD[i]), in_part[i]);
+        }
 
         // (4/9) Get first_key
         first_key = 0x0;
@@ -456,27 +473,33 @@ int decryption(char *in, char *out, char *key, int input_len) {
             if(round != 15) keys[round+1] = keys[round];
         }
 
-        for(round = 0; round < 16; round++) {
+        for(i = 0; i < NUM_PARALLEL; i++) {
+            for(round = 0; round < 16; round++) {
 #ifdef DEBUG
-            printf("%d\tbefore %8llX %8llX\n", round, ((MD >> 32) & 0x00000000ffffffff), (MD & 0x00000000ffffffff));
-            //printf("%d\t w/key %8llX %8llX\n", round, ((keys >> 32) & 0x00000000ffffffff), (keys & 0x00000000ffffffff));
+                printf("%d\tbefore %8llX %8llX\n", round, ((MD >> 32) & 0x00000000ffffffff), (MD & 0x00000000ffffffff));
+                //printf("%d\t w/key %8llX %8llX\n", round, ((keys >> 32) & 0x00000000ffffffff), (keys & 0x00000000ffffffff));
 #endif
-            // (6/9) Run DES block
-            DES(15-round, &MD, keys);
+                // (6/9) Run DES block
+                DES(15-round, &(MD[i]), keys);
+            }
         }
 
         // (7/9) Swap LR
-        temp = (MD & 0x00000000ffffffff) << 32;
-        MD >>= 32;
-        MD &= 0x00000000ffffffff;
-        MD = MD ^ temp;
+        for(i = 0; i < NUM_PARALLEL; i++) {
+            temp = (MD[i] & 0x00000000ffffffff) << 32;
+            MD[i] >>= 32;
+            MD[i] &= 0x00000000ffffffff;
+            MD[i] = MD[i] ^ temp;
+        }
 
 #ifdef DEBUG
         printf("%d\t LRfin %8llX %8llX\n", round, ((MD >> 32) & 0x00000000ffffffff), (MD & 0x00000000ffffffff));
 #endif
 
         // (8/9) Final permutation (FP)
-        getFP(&out_part, MD);
+        for(i = 0; i < NUM_PARALLEL; i++) {
+            getFP(&(out_part[i]), MD[i]);
+        }
 
 #ifdef DEBUG
         printf("%d\t final %8llX %8llX\n", round, ((out_part >> 32) & 0x00000000ffffffff), (out_part & 0x00000000ffffffff));
@@ -487,9 +510,11 @@ int decryption(char *in, char *out, char *key, int input_len) {
 #endif
 
         // (9/9) Write to output array
-        for(i = 7; i >= 0; i--) {
-            out[count + i] = out_part & 0x00ff;
-            if(i != 0) out_part >>= 8;
+        for(i = 0; i < NUM_PARALLEL; i++) {
+            for(j = 7; j >= 0; j--) {
+                out[count + (8 * i) + j] = out_part[i] & 0x00ff;
+                if(j != 0) out_part[i] >>= 8;
+            }
         }
     }
 
@@ -519,7 +544,7 @@ int main(int argc, char** argv) {
 
     // Make it to can be devided with 64-bit for convenience (7 ==> to count in EOF)
     if(iSize % 8 != 7) {
-        residue = (8 - (iSize % 8));
+        residue = (8 - (iSize % (8 * NUM_PARALLEL)));
     }
 
     // Buffer allocations
@@ -532,9 +557,10 @@ int main(int argc, char** argv) {
 
     if(1 != fread(iBuffer, iSize, 1, fi)) {
         fclose(fi);
-        free(iBuffer); free(oBuffer);
+        free(iBuffer); free(oBuffer); free(dBuffer);
         fputs("input read fails", stderr);
         exit(1);
+        return -1;
     }
 
     // GENERATE KEY FROM GIVEN KEYPHRASE
@@ -583,10 +609,6 @@ int main(int argc, char** argv) {
 #ifdef RESULT
     printf("<RESULT> dBuffer str: %s\n", dBuffer);
 #endif
-
-    fclose(fi);
-    free(iBuffer);
-    free(oBuffer);
 
     return 0;
 }
