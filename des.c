@@ -188,15 +188,17 @@ inline void getKeyPart(long long unsigned *key_part, char *key) {
 }
 
 inline void getIP(long long unsigned *out, long long unsigned in) {
+    int i;
     *out = 0;
-    for(int i = 0; i < 64; i++) {
+    for(i = 0; i < 64; i++) {
         *out += ( ( ( 0x1ull << table_IP[i] ) & in ) >> table_IP[i] ) << i;
     }
 }
 
 inline void getFP(long long unsigned *out, long long unsigned in) {
+    int i;
     *out = 0;
-    for(int i = 0; i < 64; i++) {
+    for(i = 0; i < 64; i++) {
         *out += ( ( ( 0x1ull << table_FP[i] ) & in ) >> table_FP[i] ) << i;
     }
 }
@@ -225,7 +227,7 @@ void DES(int index, long long unsigned *MD, long long unsigned *keys) {
 #endif
 
     // (2/3) Calculate f function for R block
-    fout = F(R, *keys);
+    fout = F(R, keys[index]);
 
     // (3/3) Prepare for the next ronud
     *MD = R & 0xffffffff;
@@ -297,7 +299,8 @@ int encryption(char *in, char *out, char *key, int input_len) {
     // 64-bit or 56-bit part of in, out, and key for external iteration
     long long unsigned in_part, out_part, key_part;
     // Data and round key for DES. *** these are referenced threw DES
-    long long unsigned MD, keys;
+    long long unsigned MD, first_key;
+    long long unsigned keys[16];
     // rotation_overflow: 56-bit
     long long unsigned rotation_overflow;
     // temp: for swap
@@ -312,7 +315,7 @@ int encryption(char *in, char *out, char *key, int input_len) {
     // (1/9) Generate 56-bit key_part (after parity check)
     getKeyPart(&key_part, key);
 
-    for(int count = 0; count < input_len; count += 8) {
+    for(count = 0; count < input_len; count += 8) {
         // (2/9) Cut input (input can be always devided with 64-bit, for convenience)
         in_part = 0;
         for(i = 0; i < 8; i++) {
@@ -326,34 +329,38 @@ int encryption(char *in, char *out, char *key, int input_len) {
         // (3/9) MD = Data after initial permutation (IP)
         getIP(&MD, in_part);
 
-        // (4/9) keys = First round key
-        keys = 0x0;
+        // (4/9) Get first_key
+        first_key = 0x0;
         for(i = 0; i < 56; i++) {
-            keys ^= ( ( 0x1ull << table_PC1[i]) & key_part) >> table_PC1[i];
-            if(i != 55) keys <<= 1;
+            first_key ^= ( ( 0x1ull << table_PC1[i]) & key_part) >> table_PC1[i];
+            if(i != 55) first_key <<= 1;
+        }
+        keys[0] = first_key;
+
+        // (5/9) Pre-compute all round keys (Rotate round key 1 or 2 times to LEFT (i-th bit to (i+1)-th bit, ...))
+        for(round = 0; round < 16; round++) {
+            rotation_overflow = keys[round] & 0x0080000008000000; // 27th, 55th bit kept(0-based counting)
+            keys[round] <<= 1;
+            keys[round] &= ~(0x0000000010000001);
+            keys[round] ^= (rotation_overflow >> 27);
+            keys[round] &= 0x00ffffffffffffff; // trim
+            if(round != 0 && round != 7 && round != 14 && round != 15) {
+                rotation_overflow = keys[round] & 0x0080000008000000; // 27th, 55th bit kept(0-based counting)
+                keys[round] <<= 1;
+                keys[round] &= ~(0x0000000010000001);
+                keys[round] ^= (rotation_overflow >> 27);
+                keys[round] &= 0x00ffffffffffffff; // trim
+            }
+            if(round != 15) keys[round+1] = keys[round];
         }
 
+        // (6/9) Run DES block
         for(round = 0; round < 16; round++) {
-            // (5/9) Rotate round key 1 or 2 times to LEFT (i-th bit to (i+1)-th bit, ...)
-            rotation_overflow = keys & 0x0080000008000000; // 27th, 55th bit kept(0-based counting)
-            keys <<= 1;
-            keys &= ~(0x0000000010000001);
-            keys ^= (rotation_overflow >> 27);
-            keys &= 0x00ffffffffffffff; // trim
-            if(round != 0 && round != 7 && round != 14 && round != 15) {
-                rotation_overflow = keys & 0x0080000008000000; // 27th, 55th bit kept(0-based counting)
-                keys <<= 1;
-                keys &= ~(0x0000000010000001);
-                keys ^= (rotation_overflow >> 27);
-                keys &= 0x00ffffffffffffff; // trim
-            }
 #ifdef DEBUG
         printf("%d\tbefore %8llX %8llX\n", round, ((MD >> 32) & 0x00000000ffffffff), (MD & 0x00000000ffffffff));
         //printf("%d\t w/key %8llX %8llX\n", round, ((keys >> 32) & 0x00000000ffffffff), (keys & 0x00000000ffffffff));
 #endif
-
-            // (6/9) Run DES block
-            DES(round, &MD, &keys);
+            DES(round, &MD, keys);
         }
 
         // (7/9) Swap LR
@@ -394,7 +401,8 @@ int decryption(char *in, char *out, char *key, int input_len) {
     // 64-bit or 56-bit part of in, out, and key for external iteration
     long long unsigned in_part, out_part, key_part;
     // Data and round key for DES. *** these are referenced threw DES
-    long long unsigned MD, keys;
+    long long unsigned MD, first_key;
+    long long unsigned keys[16];
     // rotation_overflow: 56-bit, for (/)
     long long unsigned rotation_overflow;
     // temp: for swap
@@ -409,7 +417,7 @@ int decryption(char *in, char *out, char *key, int input_len) {
     // (1/9) Generate 56-bit key_part (after parity check)
     getKeyPart(&key_part, key);
 
-    for(int count = 0; count < input_len; count += 8) {
+    for(count = 0; count < input_len; count += 8) {
         // (2/9) Cut input (input can be always devided with 64-bit, for convenience)
         in_part = 0;
         for(i = 7; i >= 0; i--) {
@@ -423,34 +431,38 @@ int decryption(char *in, char *out, char *key, int input_len) {
         // (3/9) MD = Data after initial permutation (IP)
         getIP(&MD, in_part);
 
-        // (4/9) keys = Last round key (Symmetry)
-        keys = 0x0;
+        // (4/9) Get first_key
+        first_key = 0x0;
         for(i = 0; i < 56; i++) {
-            keys ^= ( ( 0x1ull << table_PC1[i]) & key_part) >> table_PC1[i];
-            if(i != 55) keys <<= 1;
+            first_key ^= ( ( 0x1ull << table_PC1[i]) & key_part) >> table_PC1[i];
+            if(i != 55) first_key <<= 1;
+        }
+        keys[0] = first_key;
+
+        // (5/9) Pre-compute all round keys (Rotate round key 1 or 2 times to LEFT (i-th bit to (i+1)-th bit, ...))
+        for(round = 0; round < 16; round++) {
+            rotation_overflow = keys[round] & 0x0080000008000000; // 27th, 55th bit kept(0-based counting)
+            keys[round] <<= 1;
+            keys[round] &= ~(0x0000000010000001);
+            keys[round] ^= (rotation_overflow >> 27);
+            keys[round] &= 0x00ffffffffffffff; // trim
+            if(round != 0 && round != 7 && round != 14 && round != 15) {
+                rotation_overflow = keys[round] & 0x0080000008000000; // 27th, 55th bit kept(0-based counting)
+                keys[round] <<= 1;
+                keys[round] &= ~(0x0000000010000001);
+                keys[round] ^= (rotation_overflow >> 27);
+                keys[round] &= 0x00ffffffffffffff; // trim
+            }
+            if(round != 15) keys[round+1] = keys[round];
         }
 
         for(round = 0; round < 16; round++) {
 #ifdef DEBUG
-        printf("%d\tbefore %8llX %8llX\n", round, ((MD >> 32) & 0x00000000ffffffff), (MD & 0x00000000ffffffff));
-        //printf("%d\t w/key %8llX %8llX\n", round, ((keys >> 32) & 0x00000000ffffffff), (keys & 0x00000000ffffffff));
+            printf("%d\tbefore %8llX %8llX\n", round, ((MD >> 32) & 0x00000000ffffffff), (MD & 0x00000000ffffffff));
+            //printf("%d\t w/key %8llX %8llX\n", round, ((keys >> 32) & 0x00000000ffffffff), (keys & 0x00000000ffffffff));
 #endif
-            // (5/9) Run DES block
-            DES(16-round, &MD, &keys);
-
-            // (6/9) Rotate round key 1 or 2 times to RIGHT (i-th bit to (i+1)-th bit, ...)
-            rotation_overflow = keys & 0x0000000010000001; // 0th, 28th bit kept(0-based counting)
-            keys >>= 1;
-            keys &= ~(0x0080000008000000);
-            keys ^= (rotation_overflow << 27);
-            keys &= 0x00ffffffffffffff; // trim
-            if(round != 0 && round != 1 && round != 8 && round != 15) {
-                rotation_overflow = keys & 0x0000000010000001; // 0th, 28th bit kept(0-based counting)
-                keys >>= 1;
-                keys &= ~(0x0080000008000000);
-                keys ^= (rotation_overflow << 27);
-                keys &= 0x00ffffffffffffff; // trim
-            }
+            // (6/9) Run DES block
+            DES(15-round, &MD, keys);
         }
 
         // (7/9) Swap LR
@@ -490,6 +502,7 @@ int main(int argc, char** argv) {
     char *iBuffer;
     char *oBuffer; // output of encryption
     char *dBuffer; // output of decryption
+    int i;
 
     /*** HOW TO USE ***/
     if(argc < 2) {
@@ -526,7 +539,7 @@ int main(int argc, char** argv) {
 
     // GENERATE KEY FROM GIVEN KEYPHRASE
     char key[8];
-    for(int i = 0; i < 8; i++) {
+    for(i = 0; i < 8; i++) {
         key[i] = argv[2][i % strlen(argv[2])];
 
 #ifdef PARITY_CHECK
